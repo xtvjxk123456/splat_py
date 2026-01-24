@@ -1,7 +1,6 @@
 import pygame
 from pygame.locals import *
 import numpy as np
-import requests
 from pyrr import Matrix44, Vector3, matrix44
 import math
 import os
@@ -57,61 +56,49 @@ def create_texture_from_data(data, width, height, internal_format, data_format, 
     glTexImage2D(GL_TEXTURE_2D, 0, internal_format, width, height, 0, data_format, data_type, data)
     return tex_id
 
-def load_splat_data(url):
-    """从URL加载并解析.splat文件"""
-    print(f"Loading splat data from {url}...")
+def load_splat_data(path):
+    """Load and parse a local .splat file."""
+    print(f"Loading splat data from {path}...")
     try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        
-        # 使用流式传输逐步读取数据
-        buffer = bytearray()
-        for chunk in response.iter_content(chunk_size=8192):
-            buffer.extend(chunk)
+        if not os.path.isfile(path):
+            print(f"Error loading splat file: file not found: {path}")
+            return None, None, None, None, 0
 
-        buffer = bytes(buffer)
+        with open(path, 'rb') as handle:
+            buffer = handle.read()
         print(f"Loaded {len(buffer)} bytes.")
 
-        # .splat 文件格式：每个高斯44字节
-        # 3*float32: 位置 (12 bytes)
-        # 3*float32: 缩放 (12 bytes)
-        # 4*uint8:   颜色 (4 bytes)
-        # 4*float32: 旋转 (16 bytes)
+        # .splat file format: 4-byte aligned rows
+        # 3*float32: position (12 bytes)
+        # 3*float32: scale (12 bytes)
+        # 4*uint8:   color (4 bytes)
+        # 4*float32: rotation (16 bytes)
         row_length = 3 * 4 + 3 * 4 + 4 + 4 * 4
         num_gaussians = len(buffer) // row_length
         print(f"Found {num_gaussians} gaussians.")
 
-        # 使用Numpy的结构化数组进行高效解析
         dtype = np.dtype([
             ('pos', np.float32, 3),
             ('scale', np.float32, 3),
             ('rgba', np.uint8, 4),
             ('rot', np.float32, 4),
         ])
-        
-        # 注意： frombuffer 需要一个连续的内存块
+
         data = np.frombuffer(buffer, dtype=dtype)
 
-        # 提取数据并进行预处理
         centers = data['pos'].copy()
-        
-        # 缩放值是对数存储的，需要取指数
         scales = np.exp(data['scale'])
-
-        # 颜色需要从 uint8 [0, 255] 归一化到 float32 [0.0, 1.0]
         colors = data['rgba'].astype(np.float32) / 255.0
 
-        # 旋转是四元数，需要归一化
         rotations = data['rot']
         norms = np.linalg.norm(rotations, axis=1, keepdims=True)
         rotations /= norms
 
         return centers, scales, colors, rotations, num_gaussians
 
-    except requests.exceptions.RequestException as e:
+    except OSError as e:
         print(f"Error loading splat file: {e}")
         return None, None, None, None, 0
-
 
 def main():
     # --- 初始化 Pygame 和 OpenGL ---
@@ -140,8 +127,8 @@ def main():
         return
 
     # --- 加载 Splat 数据 ---
-    splat_url = "https://huggingface.co/datasets/antimatter15/splat/resolve/main/train.splat"
-    centers, scales, colors, rotations, num_gaussians = load_splat_data(splat_url)
+    splat_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model.splat")
+    centers, scales, colors, rotations, num_gaussians = load_splat_data(splat_path)
     
     if num_gaussians == 0:
         return
