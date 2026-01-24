@@ -173,7 +173,7 @@ class SplatRenderer:
         glBufferSubData(GL_ARRAY_BUFFER, 0, sorted_data.nbytes, sorted_data)
 
         # 3. 绘制
-        glClearColor(0, 0, 0, 1)
+        glClearColor(0, 0, 0, 0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glEnable(GL_BLEND)
         glBlendFunc(GL_ONE_MINUS_DST_ALPHA, GL_ONE) # 注意：3DGS 使用特殊的混合方式
