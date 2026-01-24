@@ -195,13 +195,64 @@ def main():
     # 替换为你自己的 .splat 文件路径
     renderer = SplatRenderer("model.splat")
 
+    # Simple orbit camera state (mouse drag + keyboard zoom)
+    cam = {
+        "yaw": 0.0,
+        "pitch": 0.0,
+        "distance": 5.0,
+        "target": glm.vec3(0, 0, 0),
+        "dragging": False,
+        "last_x": 0.0,
+        "last_y": 0.0,
+    }
+
+    def on_mouse_button(win, button, action, mods):
+        if button == glfw.MOUSE_BUTTON_LEFT:
+            cam["dragging"] = (action == glfw.PRESS)
+            if cam["dragging"]:
+                x, y = glfw.get_cursor_pos(win)
+                cam["last_x"], cam["last_y"] = x, y
+
+    def on_cursor_pos(win, x, y):
+        if not cam["dragging"]:
+            return
+        dx = x - cam["last_x"]
+        dy = y - cam["last_y"]
+        cam["last_x"], cam["last_y"] = x, y
+        cam["yaw"] += dx * 0.01
+        cam["pitch"] += dy * 0.01
+        cam["pitch"] = max(-1.5, min(1.5, cam["pitch"]))
+
+    glfw.set_mouse_button_callback(window, on_mouse_button)
+    glfw.set_cursor_pos_callback(window, on_cursor_pos)
+
     while not glfw.window_should_close(window):
         w, h = glfw.get_framebuffer_size(window)
         glViewport(0, 0, w, h)
 
         # 简单的相机矩阵
-        time = glfw.get_time()
-        view = glm.lookAt(glm.vec3(np.sin(time)*5, 2, np.cos(time)*5), glm.vec3(0,0,0), glm.vec3(0,1,0))
+        # Keyboard controls: WASD/arrow rotate, Q/E zoom
+        if glfw.get_key(window, glfw.KEY_LEFT) == glfw.PRESS or glfw.get_key(window, glfw.KEY_A) == glfw.PRESS:
+            cam["yaw"] -= 0.02
+        if glfw.get_key(window, glfw.KEY_RIGHT) == glfw.PRESS or glfw.get_key(window, glfw.KEY_D) == glfw.PRESS:
+            cam["yaw"] += 0.02
+        if glfw.get_key(window, glfw.KEY_UP) == glfw.PRESS or glfw.get_key(window, glfw.KEY_W) == glfw.PRESS:
+            cam["pitch"] -= 0.02
+        if glfw.get_key(window, glfw.KEY_DOWN) == glfw.PRESS or glfw.get_key(window, glfw.KEY_S) == glfw.PRESS:
+            cam["pitch"] += 0.02
+        cam["pitch"] = max(-1.5, min(1.5, cam["pitch"]))
+        if glfw.get_key(window, glfw.KEY_Q) == glfw.PRESS:
+            cam["distance"] *= 0.98
+        if glfw.get_key(window, glfw.KEY_E) == glfw.PRESS:
+            cam["distance"] *= 1.02
+        cam["distance"] = max(1.0, min(50.0, cam["distance"]))
+
+        cam_pos = glm.vec3(
+            cam["distance"] * np.cos(cam["pitch"]) * np.sin(cam["yaw"]),
+            cam["distance"] * np.sin(cam["pitch"]),
+            cam["distance"] * np.cos(cam["pitch"]) * np.cos(cam["yaw"]),
+        ) + cam["target"]
+        view = glm.lookAt(cam_pos, cam["target"], glm.vec3(0, 1, 0))
         proj = glm.perspective(glm.radians(45), w/h, 0.1, 100.0)
 
         renderer.render(view, proj, w, h)
