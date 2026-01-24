@@ -193,7 +193,7 @@ def main():
     glfw.make_context_current(window)
 
     # 替换为你自己的 .splat 文件路径
-    renderer = SplatRenderer("train.splat")
+    renderer = SplatRenderer("model.splat")
 
     while not glfw.window_should_close(window):
         w, h = glfw.get_framebuffer_size(window)
