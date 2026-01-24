@@ -47,9 +47,10 @@ void main() {
     // T = J * W * V
     // J 是雅可比矩阵
     float s = 1.0 / p_view.w;
-    mat2 J = mat2(
-        u_focal.x * s, 0.0,
-        0.0, u_focal.y * s
+    mat3 J = mat3(
+        u_focal.x * s, 0.0, 0.0,
+        0.0, u_focal.y * s, 0.0,
+        0.0, 0.0, 1.0
     );
 
     mat3 W = mat3(u_view);
