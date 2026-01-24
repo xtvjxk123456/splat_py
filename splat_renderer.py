@@ -19,8 +19,8 @@ def load_shader_source(path):
         return handle.read()
 
 SHADER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shaders")
-VERTEX_SHADER_PATH = os.path.join(SHADER_DIR, "vertex_shader.glsl")
-FRAGMENT_SHADER_PATH = os.path.join(SHADER_DIR, "fragment_shader.glsl")
+VERTEX_SHADER_PATH = os.path.join(SHADER_DIR, "vertex_shader.vert")
+FRAGMENT_SHADER_PATH = os.path.join(SHADER_DIR, "fragment_shader.frag")
 
 VERTEX_SHADER = load_shader_source(VERTEX_SHADER_PATH)
 FRAGMENT_SHADER = load_shader_source(FRAGMENT_SHADER_PATH)
