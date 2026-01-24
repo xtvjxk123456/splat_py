@@ -7,7 +7,7 @@ import math
 import os
 
 from OpenGL.GL import *
-from OpenGL.GL.shaders import compileProgram, compileShader
+from OpenGL.GL.shaders import compileProgram
 
 # --- 着色器代码 (从 main.js 移植) ---
 # GLSL 版本声明改为 #version 330 core，并做了一些小的语法调整
@@ -24,6 +24,26 @@ FRAGMENT_SHADER_PATH = os.path.join(SHADER_DIR, "fragment_shader.glsl")
 
 VERTEX_SHADER = load_shader_source(VERTEX_SHADER_PATH)
 FRAGMENT_SHADER = load_shader_source(FRAGMENT_SHADER_PATH)
+
+
+def _format_shader_source(source):
+    lines = source.splitlines()
+    return "\n".join(f"{idx + 1:04d}: {line}" for idx, line in enumerate(lines))
+
+
+def compile_shader_with_log(source, shader_type, label):
+    shader = glCreateShader(shader_type)
+    glShaderSource(shader, source)
+    glCompileShader(shader)
+
+    status = glGetShaderiv(shader, GL_COMPILE_STATUS)
+    if status != GL_TRUE:
+        raw_log = glGetShaderInfoLog(shader)
+        log = raw_log.decode("utf-8", errors="replace") if isinstance(raw_log, (bytes, bytearray)) else str(raw_log)
+        pretty_source = _format_shader_source(source)
+        raise RuntimeError(f"Shader compile failed ({label}):\n{log}\n--- source ---\n{pretty_source}")
+
+    return shader
 
 
 def create_texture_from_data(data, width, height, internal_format, data_format, data_type):
@@ -112,8 +132,8 @@ def main():
     # --- 加载并编译着色器 ---
     try:
         shader_program = compileProgram(
-            compileShader(VERTEX_SHADER, GL_VERTEX_SHADER),
-            compileShader(FRAGMENT_SHADER, GL_FRAGMENT_SHADER)
+            compile_shader_with_log(VERTEX_SHADER, GL_VERTEX_SHADER, VERTEX_SHADER_PATH),
+            compile_shader_with_log(FRAGMENT_SHADER, GL_FRAGMENT_SHADER, FRAGMENT_SHADER_PATH)
         )
     except Exception as e:
         print("Shader compilation error:", e)
