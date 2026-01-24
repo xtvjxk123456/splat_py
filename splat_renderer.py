@@ -77,12 +77,29 @@ def load_splat_data(path):
         num_gaussians = len(buffer) // row_length
         print(f"Found {num_gaussians} gaussians.")
 
-        dtype = np.dtype([
+        base_dtype = np.dtype([
             ('pos', np.float32, 3),
             ('scale', np.float32, 3),
             ('rgba', np.uint8, 4),
             ('rot', np.float32, 4),
         ])
+
+        dtype = base_dtype
+        if len(buffer) % dtype.itemsize != 0:
+            # Some .splat files include 4 bytes of padding per row (48-byte stride).
+            padded_dtype = np.dtype([
+                ('pos', np.float32, 3),
+                ('scale', np.float32, 3),
+                ('rgba', np.uint8, 4),
+                ('rot', np.float32, 4),
+                ('_pad', 'V4'),
+            ])
+            if len(buffer) % padded_dtype.itemsize == 0:
+                dtype = padded_dtype
+            else:
+                trimmed_len = len(buffer) - (len(buffer) % dtype.itemsize)
+                print(f"Warning: buffer size {len(buffer)} not multiple of {dtype.itemsize}, trimming to {trimmed_len}.")
+                buffer = buffer[:trimmed_len]
 
         data = np.frombuffer(buffer, dtype=dtype)
 
@@ -90,8 +107,10 @@ def load_splat_data(path):
         scales = np.exp(data['scale'])
         colors = data['rgba'].astype(np.float32) / 255.0
 
-        rotations = data['rot']
+        rotations = data['rot'].copy()
         norms = np.linalg.norm(rotations, axis=1, keepdims=True)
+        # Avoid division by zero for degenerate quaternions.
+        norms = np.maximum(norms, 1e-8)
         rotations /= norms
 
         return centers, scales, colors, rotations, num_gaussians
