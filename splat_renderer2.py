@@ -21,16 +21,22 @@ uniform vec2 viewport;
 
 out vec4 vColor;
 out vec2 vPosition;
+out vec3 vConic;
+out float vRadius;
 
 void main() {
     vColor = quad_color;
     vPosition = position;
 
     // 构建旋转矩阵
-    float r = quad_rot.x;
-    float x = quad_rot.y;
-    float y = quad_rot.z;
-    float z = quad_rot.w;
+    // rot 由 uint8 传入（0..255），这里按 convert.py 的编码还原到 [-1, 1] 并归一化
+    vec4 q = (quad_rot - 128.0) / 128.0;
+    q = normalize(q);
+    // 许多 3DGS PLY 使用 (x,y,z,w) 顺序存储，这里按 w 在最后解码
+    float r = q.w;
+    float x = q.x;
+    float y = q.y;
+    float z = q.z;
     mat3 R = mat3(
         1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - r * z), 2.0 * (x * z + r * y),
         2.0 * (x * y + r * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - r * x),
@@ -44,12 +50,21 @@ void main() {
 
     // 将 3D 协方差投影到 2D
     vec4 cam_pos = view * vec4(quad_pos, 1.0);
+    // 相机前方是负 Z，过滤掉相机后方点避免投影异常
+    if (cam_pos.z >= -1e-4) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        vColor = vec4(0.0);
+        vConic = vec3(0.0);
+        vRadius = 0.0;
+        return;
+    }
     
     // 简单的透视投影近似 (EWA Splatting)
     float f = focal.x;
+    float zc = -cam_pos.z;
     mat3 J = mat3(
-        f / cam_pos.z, 0, -(f * cam_pos.x) / (cam_pos.z * cam_pos.z),
-        0, f / cam_pos.z, -(f * cam_pos.y) / (cam_pos.z * cam_pos.z),
+        f / zc, 0, -(f * cam_pos.x) / (zc * zc),
+        0, f / zc, -(f * cam_pos.y) / (zc * zc),
         0, 0, 0
     );
     mat3 W = mat3(view);
@@ -67,7 +82,19 @@ void main() {
     float lambda2 = mid - sqrt(max(0.1, mid * mid - det));
     float radius = ceil(3.0 * sqrt(max(lambda1, lambda2)));
 
-    gl_Position = projection * cam_pos + vec4(position * radius / viewport * 2.0, 0.0, 0.0);
+    // 传给片元：椭圆二次型系数（对称矩阵）
+    float inv_det = 1.0 / max(det, 1e-6);
+    vConic = vec3(
+        cov2d[1][1] * inv_det,
+        -cov2d[0][1] * inv_det,
+        cov2d[0][0] * inv_det
+    );
+    vRadius = radius;
+
+    // 先得到裁剪空间坐标，再按 w 缩放做屏幕空间扩展
+    vec4 clip_pos = projection * cam_pos;
+    clip_pos.xy += position * radius / viewport * 2.0 * clip_pos.w;
+    gl_Position = clip_pos;
 }
 """
 
@@ -75,12 +102,16 @@ FRAGMENT_SHADER = """
 #version 330 core
 in vec4 vColor;
 in vec2 vPosition;
+in vec3 vConic;
+in float vRadius;
 out vec4 fragColor;
 
 void main() {
-    float d = dot(vPosition, vPosition);
-    if (d > 1.0) discard;
-    float opacity = exp(-0.5 * d * 16.0) * vColor.a;
+    // 用椭圆二次型计算屏幕空间距离
+    vec2 p = vPosition * vRadius;
+    float d = vConic.x * p.x * p.x + 2.0 * vConic.y * p.x * p.y + vConic.z * p.y * p.y;
+    if (d > 9.0) discard; // 3-sigma 裁剪
+    float opacity = exp(-0.5 * d) * vColor.a;
     fragColor = vec4(vColor.rgb * opacity, opacity);
 }
 """
@@ -139,7 +170,8 @@ class SplatRenderer:
         glVertexAttribDivisor(3, 1)
 
         glEnableVertexAttribArray(4) # rot
-        glVertexAttribPointer(4, 4, GL_BYTE, GL_TRUE, stride, ctypes.c_void_p(28))
+        # rot 在 convert.py 中以 uint8 保存（0..255），这里不做归一化，交给 shader 解码
+        glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_FALSE, stride, ctypes.c_void_p(28))
         glVertexAttribDivisor(4, 1)
 
     def compile_shader(self, vs_src, fs_src):
@@ -159,33 +191,51 @@ class SplatRenderer:
     def render(self, view, proj, width, height):
         # 1. 深度排序 (3DGS 必须从后往前渲染以保证透明度正确)
         # 计算每个点在 view 空间的 Z 值
-        view_mat = np.array(view).reshape(4,4)
+        # glm 的矩阵是列主序，这里用 value_ptr 按列主序取出，再按数学矩阵行列索引
+        view_ptr = glm.value_ptr(view)
+        view_mat = np.ctypeslib.as_array(view_ptr, shape=(16,)).reshape(4, 4, order="F")
         # 简单的 CPU 排序 (在大规模数据下会是瓶颈)
         positions = self.pos
-        # 投影 Z
-        z_values = positions @ view_mat[:3, 2] + view_mat[3, 2]
-        indices = np.argsort(z_values) # 从远到近
+        # view-space Z：用齐次坐标做完整变换，避免行/列主序混淆
+        ones = np.ones((positions.shape[0], 1), dtype=positions.dtype)
+        positions_h = np.concatenate([positions, ones], axis=1)
+        cam_pos = positions_h @ view_mat.T
+        z_values = cam_pos[:, 2]
+        # 过滤相机后方点，避免投影异常导致的乱透
+        front_mask = z_values < -1e-4
+        front_indices = np.nonzero(front_mask)[0]
+        z_front = z_values[front_mask]
+        # 临时切换：使用 back-to-front（远到近）排序
+        # OpenGL 视图空间里，镜头前方通常是负 Z，越远数值越小（更负）
+        order = np.argsort(z_front)
+        indices = front_indices[order]
 
         sorted_data = self.raw_data[indices]
+        draw_count = sorted_data.shape[0]
 
         # 2. 更新 GPU 数据
         glBindBuffer(GL_ARRAY_BUFFER, self.splat_vbo)
-        glBufferSubData(GL_ARRAY_BUFFER, 0, sorted_data.nbytes, sorted_data)
+        if draw_count > 0:
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sorted_data.nbytes, sorted_data)
 
         # 3. 绘制
         glClearColor(0, 0, 0, 0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glEnable(GL_BLEND)
-        glBlendFunc(GL_ONE_MINUS_DST_ALPHA, GL_ONE) # 注意：3DGS 使用特殊的混合方式
+        # 临时切换：标准预乘 alpha 混合（back-to-front）
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
         
         glUseProgram(self.shader)
         glUniformMatrix4fv(glGetUniformLocation(self.shader, "view"), 1, GL_FALSE, glm.value_ptr(view))
         glUniformMatrix4fv(glGetUniformLocation(self.shader, "projection"), 1, GL_FALSE, glm.value_ptr(proj))
-        glUniform2f(glGetUniformLocation(self.shader, "focal"), 1100, 1100) # 示例焦距
+        # 根据投影矩阵计算像素焦距
+        focal_x = 0.5 * width * proj[0][0]
+        focal_y = 0.5 * height * proj[1][1]
+        glUniform2f(glGetUniformLocation(self.shader, "focal"), focal_x, focal_y)
         glUniform2f(glGetUniformLocation(self.shader, "viewport"), width, height)
 
         glBindVertexArray(self.vao)
-        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, self.count)
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, draw_count)
 
 def main():
     if not glfw.init(): return
