@@ -5,6 +5,11 @@ import glm
 import struct
 import ctypes
 
+# 可切换的混合/排序模式： "back_to_front"（稳定）或 "front_to_back"（严格）
+BLEND_MODE = "back_to_front"
+# 调试显示模式： "off" | "depth" | "alpha"
+DEBUG_MODE = "off"
+
 # --- 着色器代码 (基于 antimatter15 的实现) ---
 VERTEX_SHADER = """
 #version 330 core
@@ -18,11 +23,14 @@ uniform mat4 projection;
 uniform mat4 view;
 uniform vec2 focal;
 uniform vec2 viewport;
+uniform int debug_mode;
+uniform float debug_scale;
 
 out vec4 vColor;
 out vec2 vPosition;
 out vec3 vConic;
 out float vRadius;
+out float vDepth;
 
 void main() {
     vColor = quad_color;
@@ -56,12 +64,14 @@ void main() {
         vColor = vec4(0.0);
         vConic = vec3(0.0);
         vRadius = 0.0;
+        vDepth = 0.0;
         return;
     }
     
     // 简单的透视投影近似 (EWA Splatting)
     float f = focal.x;
     float zc = -cam_pos.z;
+    vDepth = zc;
     mat3 J = mat3(
         f / zc, 0, -(f * cam_pos.x) / (zc * zc),
         0, f / zc, -(f * cam_pos.y) / (zc * zc),
@@ -100,10 +110,13 @@ void main() {
 
 FRAGMENT_SHADER = """
 #version 330 core
+uniform int debug_mode;
+uniform float debug_scale;
 in vec4 vColor;
 in vec2 vPosition;
 in vec3 vConic;
 in float vRadius;
+in float vDepth;
 out vec4 fragColor;
 
 void main() {
@@ -112,6 +125,18 @@ void main() {
     float d = vConic.x * p.x * p.x + 2.0 * vConic.y * p.x * p.y + vConic.z * p.y * p.y;
     if (d > 9.0) discard; // 3-sigma 裁剪
     float opacity = exp(-0.5 * d) * vColor.a;
+    if (debug_mode == 1) {
+        // 深度可视化：越近越亮
+        float t = clamp(vDepth * debug_scale, 0.0, 1.0);
+        float g = 1.0 - t;
+        fragColor = vec4(vec3(g), 1.0);
+        return;
+    }
+    if (debug_mode == 2) {
+        // 透明度可视化
+        fragColor = vec4(vec3(opacity), 1.0);
+        return;
+    }
     fragColor = vec4(vColor.rgb * opacity, opacity);
 }
 """
@@ -205,9 +230,14 @@ class SplatRenderer:
         front_mask = z_values < -1e-4
         front_indices = np.nonzero(front_mask)[0]
         z_front = z_values[front_mask]
-        # 临时切换：使用 back-to-front（远到近）排序
-        # OpenGL 视图空间里，镜头前方通常是负 Z，越远数值越小（更负）
-        order = np.argsort(z_front)
+        # 根据混合模式选择排序方向
+        # OpenGL 视图空间里，镜头前方通常是负 Z
+        if BLEND_MODE == "front_to_back":
+            # 近到远
+            order = np.argsort(z_front)
+        else:
+            # 远到近
+            order = np.argsort(-z_front)
         indices = front_indices[order]
 
         sorted_data = self.raw_data[indices]
@@ -222,8 +252,12 @@ class SplatRenderer:
         glClearColor(0, 0, 0, 0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glEnable(GL_BLEND)
-        # 临时切换：标准预乘 alpha 混合（back-to-front）
-        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+        # 根据混合模式设置混合方式
+        if BLEND_MODE == "front_to_back":
+            glBlendFunc(GL_ONE_MINUS_DST_ALPHA, GL_ONE)
+        else:
+            # 标准预乘 alpha 混合（back-to-front）
+            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
         
         glUseProgram(self.shader)
         glUniformMatrix4fv(glGetUniformLocation(self.shader, "view"), 1, GL_FALSE, glm.value_ptr(view))
@@ -233,6 +267,10 @@ class SplatRenderer:
         focal_y = 0.5 * height * proj[1][1]
         glUniform2f(glGetUniformLocation(self.shader, "focal"), focal_x, focal_y)
         glUniform2f(glGetUniformLocation(self.shader, "viewport"), width, height)
+        # 调试显示开关
+        debug_map = {"off": 0, "depth": 1, "alpha": 2}
+        glUniform1i(glGetUniformLocation(self.shader, "debug_mode"), debug_map.get(DEBUG_MODE, 0))
+        glUniform1f(glGetUniformLocation(self.shader, "debug_scale"), 0.02)
 
         glBindVertexArray(self.vao)
         glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, draw_count)
@@ -241,6 +279,8 @@ def main():
     if not glfw.init(): return
     window = glfw.create_window(1280, 720, "Python Splat Viewer", None, None)
     glfw.make_context_current(window)
+
+    global DEBUG_MODE
 
     # 替换为你自己的 .splat 文件路径
     renderer = SplatRenderer("model.splat")
@@ -276,6 +316,11 @@ def main():
     glfw.set_mouse_button_callback(window, on_mouse_button)
     glfw.set_cursor_pos_callback(window, on_cursor_pos)
 
+    # 调试显示热键（Z 键循环切换）
+    debug_modes = ["off", "depth", "alpha"]
+    debug_index = debug_modes.index(DEBUG_MODE) if DEBUG_MODE in debug_modes else 0
+    last_debug_key = glfw.RELEASE
+
     while not glfw.window_should_close(window):
         w, h = glfw.get_framebuffer_size(window)
         glViewport(0, 0, w, h)
@@ -296,6 +341,14 @@ def main():
         if glfw.get_key(window, glfw.KEY_E) == glfw.PRESS:
             cam["distance"] *= 1.02
         cam["distance"] = max(1.0, min(50.0, cam["distance"]))
+
+        # Z 键切换 debug 模式：off -> depth -> alpha
+        debug_key = glfw.get_key(window, glfw.KEY_Z)
+        if debug_key == glfw.PRESS and last_debug_key != glfw.PRESS:
+            debug_index = (debug_index + 1) % len(debug_modes)
+            DEBUG_MODE = debug_modes[debug_index]
+            print(f"DEBUG_MODE = {DEBUG_MODE}")
+        last_debug_key = debug_key
 
         cam_pos = glm.vec3(
             cam["distance"] * np.cos(cam["pitch"]) * np.sin(cam["yaw"]),
