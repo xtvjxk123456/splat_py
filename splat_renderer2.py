@@ -230,14 +230,14 @@ class SplatRenderer:
         front_mask = z_values < -1e-4
         front_indices = np.nonzero(front_mask)[0]
         z_front = z_values[front_mask]
-        # 根据混合模式选择排序方向
-        # OpenGL 视图空间里，镜头前方通常是负 Z
+        # 参考 main.js：用相机前方的正深度排序，避免负 Z 符号混淆
+        depth_front = -z_front
         if BLEND_MODE == "front_to_back":
-            # 近到远
-            order = np.argsort(z_front)
+            # 近 -> 远
+            order = np.argsort(depth_front, kind="stable")
         else:
-            # 远到近
-            order = np.argsort(-z_front)
+            # 远 -> 近
+            order = np.argsort(-depth_front, kind="stable")
         indices = front_indices[order]
 
         sorted_data = self.raw_data[indices]
@@ -289,7 +289,7 @@ def main():
     cam = {
         "yaw": 0.0,
         "pitch": 0.0,
-        "distance": 100,
+        "distance": 10,
         "target": glm.vec3(0, 0, 0),
         "dragging": False,
         "last_x": 0.0,
