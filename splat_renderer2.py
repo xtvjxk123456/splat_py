@@ -199,7 +199,7 @@ def main():
     cam = {
         "yaw": 0.0,
         "pitch": 0.0,
-        "distance": 5.0,
+        "distance": 100,
         "target": glm.vec3(0, 0, 0),
         "dragging": False,
         "last_x": 0.0,
